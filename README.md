@@ -1,6 +1,6 @@
-# astrbot_plugin_fishaudio_tts
+# FishAudio TTS 音色克隆
 
-基于 [FishAudio](https://fish.audio) API 的 AstrBot 语音插件，把文字转成语音并直接以语音消息发送。
+基于 [FishAudio](https://fish.audio) API 的 AstrBot 语音合成插件，支持多音色克隆，把文字转成语音并直接以语音消息发送。
 
 ## 功能一览
 
