@@ -1,0 +1,44 @@
+{
+  "api_base_url": {
+    "description": "FishAudio API 地址",
+    "type": "string",
+    "hint": "默认 https://api.fish.audio，自部署时可修改",
+    "default": "https://api.fish.audio"
+  },
+  "api_key": {
+    "description": "FishAudio API Key",
+    "type": "string",
+    "hint": "从 https://fish.audio/app/api-keys 获取",
+    "default": ""
+  },
+  "model": {
+    "description": "TTS 模型",
+    "type": "string",
+    "hint": "可选: s2.1-pro-free(免费), s2.1-pro, s2-pro, s1",
+    "default": "s2.1-pro-free"
+  },
+  "proxy": {
+    "description": "HTTP 代理地址",
+    "type": "string",
+    "hint": "留空不使用代理，格式: http://ip:port",
+    "default": ""
+  },
+  "voice_names": {
+    "description": "音色名称列表，一行一个（与下方 ID 一一对应）",
+    "type": "text",
+    "default": "默认音色",
+    "hint": "例如：\n温柔女声\n沉稳男声\n活泼少女"
+  },
+  "voice_ids": {
+    "description": "音色 ID 列表，一行一个（与上方名称一一对应）",
+    "type": "text",
+    "default": "",
+    "hint": "例如：\n7f92f8afb8ec43bf81429cc1c9199cb1\n3a5b6c7d8e9f0123456789abcdef\n...\n可在 https://fish.audio/models 获取"
+  },
+  "rate_limit_seconds": {
+    "description": "用户调用间隔(秒)",
+    "type": "int",
+    "default": 5,
+    "hint": "0 表示不限制，管理员不受限"
+  }
+}
