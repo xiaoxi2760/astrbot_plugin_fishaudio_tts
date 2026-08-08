@@ -2,6 +2,7 @@ import os
 import uuid
 import asyncio
 import aiohttp
+import time
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -51,6 +52,7 @@ class FishAudioTTS(Star):
         self.model = config.get("model", "s2.1-pro-free")
         self.proxy = config.get("proxy", "").strip() or None  # 空字符串转为 None
         self.rate_limit_seconds = config.get("rate_limit_seconds", 5)
+        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60, connect=10, sock_read=30))
 
         # ---- 解析音色配置（名称 -> ID 映射） ----
         self.voices = {}          # 字典：{中文名称: 音色ID}
@@ -60,12 +62,21 @@ class FishAudioTTS(Star):
         # ---- 音频临时存储目录 ----
         self.output_dir = os.path.join("data", "temp", "astrbot_plugin_fishaudio_tts")
         os.makedirs(self.output_dir, exist_ok=True)
+        # ---- 清理超过 24 小时的旧音频缓存，防止磁盘膨胀 ----
+        now = time.time()
+        for fname in os.listdir(self.output_dir):
+            fpath = os.path.join(self.output_dir, fname)
+            try:
+                if os.path.isfile(fpath) and now - os.path.getmtime(fpath) > 86400:
+                    os.remove(fpath)
+            except OSError as e:
+                logger.warning(f"清理旧音频缓存失败 {fpath}: {e}")
 
         # ---- 频率限制记录：记录每个用户最近一次调用的时间戳 ----
         self.user_last_call = {}  # 键：unified_msg_origin，值：时间戳（秒）
 
-        # ---- 自然语言 TTS 开关：默认关闭，重启后恢复关闭 ----
-        self.enabled = False
+        # ---- 自然语言 TTS 开关：默认开启，重启后恢复开启 ----
+        self.enabled = True
 
     # ------------------------------------------------------------
     # 内部工具方法
@@ -156,7 +167,7 @@ class FishAudioTTS(Star):
             return True
 
         user_id = event.unified_msg_origin
-        now = asyncio.get_event_loop().time()
+        now = time.monotonic()
         last = self.user_last_call.get(user_id, 0)
 
         if now - last < self.rate_limit_seconds:
@@ -171,62 +182,60 @@ class FishAudioTTS(Star):
         }
         return True
 
-    async def _tts_request(self, text: str, voice_id: str) -> bytes:
+    async def _tts_request(self, text: str, voice_id: str, filepath: str) -> None:
         """
-        向 FishAudio API 发送 TTS 请求。
+        向 FishAudio API 发送 TTS 请求，流式写入 WAV 文件。
         参数：
             text     - 要合成的文本（可包含情感标签）
             voice_id - 参考音色 ID，若为空则使用 API 默认音色
-        返回：音频文件的二进制数据（WAV 格式）
+            filepath - 音频输出文件路径
+        对 429/5xx 或网络/超时错误做指数退避重试（最多 3 次）。
         """
-        # 请求头：注意 model 放在 Header 中（FishAudio 旧版 API 规范）
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "model": self.model,            # 用户配置的模型，放在 Header
         }
 
-        # 请求体：文本和输出格式
         payload = {
             "text": text,
             "format": "wav",
         }
-        # 如果指定了音色 ID，则添加到请求体
         if voice_id:
             payload["reference_id"] = voice_id
 
-        # 设置超时（总时间 60 秒）
-        timeout = aiohttp.ClientTimeout(total=60)
-
-        # 发起异步 HTTP POST 请求
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{self.api_base_url}/v1/tts",
-                headers=headers,
-                json=payload,
-                timeout=timeout,
-                proxy=self.proxy,   # 用户配置的代理（若为空字符串则 None，不使用代理）
-            ) as resp:
-                # 检查响应状态码
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    error_text = error_text[:200]   # 截断过长错误信息，避免刷屏
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                async with self._session.post(
+                    f"{self.api_base_url}/v1/tts",
+                    headers=headers,
+                    json=payload,
+                    proxy=self.proxy,
+                ) as resp:
+                    if resp.status == 200:
+                        with open(filepath, "wb") as f:
+                            async for chunk in resp.content.iter_chunked(64 * 1024):
+                                f.write(chunk)
+                        return
+                    error_text = (await resp.text())[:200]
+                    # 429 或 5xx 可重试；其他状态码直接失败
+                    if resp.status in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                        logger.warning(f"FishAudio TTS 返回 HTTP {resp.status}，第 {attempt + 1} 次重试")
+                        await asyncio.sleep(min(2 ** attempt, 8))
+                        continue
                     raise Exception(f"API 返回 HTTP {resp.status}: {error_text}")
+            except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"FishAudio TTS 网络/超时错误：{e}，第 {attempt + 1} 次重试")
+                    await asyncio.sleep(min(2 ** attempt, 8))
+                    continue
+                raise
 
-                # 成功时返回音频二进制数据
-                return await resp.read()
-
-    async def _save_audio(self, audio_data: bytes) -> str:
-        """
-        将音频二进制数据保存为临时 WAV 文件。
-        文件名使用随机 UUID 避免冲突。
-        返回保存后的文件完整路径。
-        """
+    def _new_audio_path(self) -> str:
+        """生成随机命名的临时 WAV 文件路径。"""
         filename = f"{uuid.uuid4().hex}.wav"
-        filepath = os.path.join(self.output_dir, filename)
-        with open(filepath, "wb") as f:
-            f.write(audio_data)
-        return filepath
+        return os.path.join(self.output_dir, filename)
 
     # ------------------------------------------------------------
     # 自然语言触发：音色名说 <文本>
@@ -260,8 +269,8 @@ class FishAudioTTS(Star):
             return
 
         try:
-            audio_data = await self._tts_request(text, self.voices[voice_name])
-            filepath = await self._save_audio(audio_data)
+            filepath = self._new_audio_path()
+            await self._tts_request(text, self.voices[voice_name], filepath)
             yield event.chain_result([
                 Comp.Plain(f"{voice_name}: "),
                 Comp.Record(file=filepath),
@@ -279,8 +288,8 @@ class FishAudioTTS(Star):
         self,
         event: AstrMessageEvent,
         text: str,
-        voice_name: str = None,
-        emotion: str = None,
+        voice_name: str | None = None,
+        emotion: str | None = None,
     ):
         """
 让 AI 用语音和用户说话，这是插件提供的“开口说话”能力。
@@ -338,11 +347,11 @@ Args:
             return
 
         try:
-            audio_data = await self._tts_request(text, self.voices[used_voice_name])
-            filepath = await self._save_audio(audio_data)
+            filepath = self._new_audio_path()
+            await self._tts_request(text, self.voices[used_voice_name], filepath)
 
             logger.info(
-                f"FishAudio LLM TTS 成功：{len(audio_data)} 字节 -> {filepath}"
+                f"FishAudio LLM TTS 成功：{os.path.getsize(filepath)} 字节 -> {filepath}"
                 f"（音色：{used_voice_name}）"
             )
 
@@ -398,3 +407,8 @@ Args:
             yield event.plain_result("想听我说什么呀？")
         else:
             yield event.plain_result("喔，那我闭嘴咯。")
+
+    async def terminate(self):
+        """插件卸载时关闭 aiohttp 会话，避免资源泄漏。"""
+        if self._session and not self._session.closed:
+            await self._session.close()
