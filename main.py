@@ -13,7 +13,7 @@ from astrbot.core.star.filter.event_message_type import EventMessageType
 
 
 # 注册插件：名字、作者、描述、版本号
-@register("astrbot_plugin_fishaudio_tts", "YourName", "基于 FishAudio API 的 TTS 插件，支持多音色、代理和频率限制", "2.1.0")
+@register("astrbot_plugin_fishaudio_tts", "xiaoxi2760", "基于 FishAudio API 的 TTS 插件，支持多音色、代理和频率限制", "2.1.0")
 class FishAudioTTS(Star):
     """
     FishAudio TTS 插件
