@@ -156,9 +156,8 @@ class FishAudioTTS(Star):
 
     def _help_text(self) -> str:
         """生成语音功能使用帮助文本。"""
-        voice_names = "、".join(self.voices.keys()) if self.voices else "（未配置）"
         return "\n".join([
-            "🎙️ FishAudio TTS 使用帮助",
+            "🎙️ 语音合成使用帮助",
             "",
             "【语音合成】发送：音色名说 文本",
             "例如：小爱说 今天天气真不错",
@@ -168,12 +167,8 @@ class FishAudioTTS(Star):
             "【使用帮助】发送：语音帮助",
             "【功能开关】管理员发送：/tts",
             "",
-            f"【当前音色】{voice_names}",
-            "",
             "【情感标签】[happy] [sad] [angry] [whisper] [excited] [neutral] [fearful] [surprised]",
-            "其他标签（如 [sleep]）也会原样透传。",
-            "",
-            "【LLM 语音】开启后 AI 可调用 tts_speak 工具朗读内容，并附带一小段文字回复。",
+            "其他标签不一定生效，也可尝试。",
         ])
 
     def _voice_list_text(self) -> str:
