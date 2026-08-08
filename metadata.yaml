@@ -1,5 +1,5 @@
 name: astrbot_plugin_fishaudio_tts
 display_name: FishAudio TTS 音色克隆
 desc: 基于 FishAudio API 的 TTS 插件。管理员通过 /tts 开关控制功能，开启后支持音色名说文本和 tts_speak LLM 语音工具。
-version: 2.0.0
+version: 2.1.0
 author: YourName
