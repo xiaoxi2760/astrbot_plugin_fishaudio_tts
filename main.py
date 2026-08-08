@@ -232,7 +232,7 @@ class FishAudioTTS(Star):
             "",
             "【查看音色】发送：语音音色",
             "【默认音色】管理员发送：语音默认（可跟音色名，如：语音默认 小爱）",
-            "【语音状态】发送：语音状态",
+            "【语音状态】管理员发送：语音状态",
             "【使用帮助】发送：语音帮助",
             "【功能开关】管理员发送：/tts",
             "",
@@ -480,6 +480,8 @@ class FishAudioTTS(Star):
         for keyword in ("语音帮助", "语音音色", "语音状态", "语音默认"):
             if msg == keyword or msg.startswith(keyword + " ") or msg.startswith(keyword + "　"):
                 event.stop_event()
+                if keyword in ("语音状态", "语音默认") and not event.is_admin():
+                    return  # 仅管理员可用
                 if keyword == "语音帮助":
                     yield event.plain_result(self._help_text())
                 elif keyword == "语音音色":
@@ -669,12 +671,12 @@ Args:
         return "\n".join(lines)
 
     def _set_default_voice(self, voice_arg: str, event: AstrMessageEvent) -> str:
-        """处理「语音默认」指令：无参数时显示当前默认，设置仅管理员可用。"""
+        """处理「语音默认」指令（仅管理员）：无参数时显示当前默认。"""
+        if not event.is_admin():
+            return "仅管理员可用该指令。"
         if not voice_arg:
             current = self._effective_default_voice_name() or "未配置"
-            return f"当前默认音色：{current}\n发送「语音默认 音色名」可切换（仅管理员）。"
-        if not event.is_admin():
-            return "仅管理员可切换默认音色。"
+            return f"当前默认音色：{current}\n发送「语音默认 音色名」可切换。"
         if voice_arg not in self.voices:
             return f"音色「{voice_arg}」不存在，可用「语音音色」查看。"
         self._default_voice_override = voice_arg
@@ -696,8 +698,10 @@ Args:
 
     @filter.command("语音默认")
     async def voice_default_cmd(self, event: AstrMessageEvent):
-        """查看/切换默认音色（切换仅管理员）。"""
+        """查看/切换默认音色（仅管理员）。"""
         event.stop_event()
+        if not event.is_admin():
+            return
         msg = (event.message_str or "").strip()
         arg = msg
         for prefix in ("/语音默认", "语音默认"):
@@ -708,8 +712,10 @@ Args:
 
     @filter.command("语音状态")
     async def voice_status_cmd(self, event: AstrMessageEvent):
-        """查看语音功能状态。"""
+        """查看语音功能状态（仅管理员）。"""
         event.stop_event()
+        if not event.is_admin():
+            return
         yield event.plain_result(self._voice_status_text())
 
     async def terminate(self):
