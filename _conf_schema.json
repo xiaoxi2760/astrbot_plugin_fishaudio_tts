@@ -42,10 +42,10 @@
     "hint": "0 表示不限制，管理员不受限"
   },
   "max_chars": {
-    "description": "同步/异步阈值(字)",
+    "description": "字数上限(字)",
     "type": "int",
     "default": 500,
-    "hint": "文本超过该字数时自动改用异步接口合成，等待时间稍长"
+    "hint": "文本超过该字数时直接回复字数超限，不合成"
   },
   "max_concurrent_requests": {
     "description": "最大并发请求数",
@@ -74,17 +74,5 @@
     "description": "读取超时(秒)",
     "type": "int",
     "default": 30
-  },
-  "job_poll_timeout": {
-    "description": "异步任务总等待上限(秒)",
-    "type": "int",
-    "default": 180,
-    "hint": "超过该时间任务仍未完成则放弃"
-  },
-  "job_poll_interval": {
-    "description": "异步任务轮询间隔(秒)",
-    "type": "int",
-    "default": 3,
-    "hint": "官方建议 3-5 秒，轮询间隔会自动逐步增加"
   }
 }

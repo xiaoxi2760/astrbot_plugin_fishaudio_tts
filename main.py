@@ -36,13 +36,6 @@ class FishAudioTTS(Star):
         "surprised",
     }  # 官方文档确认的常用标签；其他标签也会以 [标签] 形式原样透传
 
-    # 旧版模型名 -> Open API v1 modelId 映射（异步接口使用）
-    LEGACY_TO_MODEL_ID = {
-        "s2.1-pro-free": "fishaudio-s21pro-flash",
-        "s2.1-pro": "fishaudio-s21pro",
-        "s2-pro": "fishaudio-s2pro",
-        "s1": "fishaudio-s1",
-    }
 
     def __init__(self, context: Context, config: AstrBotConfig):
         """
@@ -63,15 +56,12 @@ class FishAudioTTS(Star):
         self.rate_limit_seconds = config.get("rate_limit_seconds", 5)
 
         # ---- 可配置限制（字数、并发、重试、超时、异步轮询） ----
-        self.max_chars = max(1, int(config.get("max_chars", 500) or 500))      # 超过该字数改用异步接口
+        self.max_chars = max(1, int(config.get("max_chars", 500) or 500))      # 字数上限，超出直接提示字数超限
         self.max_concurrent_requests = max(1, int(config.get("max_concurrent_requests", 5) or 5))
         self.max_retries = max(1, int(config.get("max_retries", 3) or 3))
         self.timeout_total = float(config.get("timeout_total", 60) or 60)
         self.timeout_connect = float(config.get("timeout_connect", 10) or 10)
         self.timeout_sock_read = float(config.get("timeout_sock_read", 30) or 30)
-        self.job_poll_timeout = float(config.get("job_poll_timeout", 180) or 180)  # 异步任务总等待上限(秒)
-        self.job_poll_interval = float(config.get("job_poll_interval", 3) or 3)    # 异步任务轮询间隔(秒)
-
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(
                 total=self.timeout_total,
@@ -228,7 +218,7 @@ class FishAudioTTS(Star):
             "例如：小爱说 今天天气真不错",
             "      小爱说 [happy]今天是个好日子",
             "",
-            f"文本超过 {self.max_chars} 字时自动改用异步合成，等待时间稍长。",
+            f"【字数限制】文本最多 {self.max_chars} 字，超出会回复字数超限。",
             "",
             "【查看音色】发送：语音音色",
             "【默认音色】管理员发送：语音默认（可跟音色名，如：语音默认 小爱）",
@@ -280,26 +270,8 @@ class FishAudioTTS(Star):
         }
         return True
 
-    def _open_api_model_id(self) -> str | None:
-        """把配置里的模型名映射为 Open API v1 的 modelId；无法映射时原样透传。"""
-        model = (self.model or "").strip()
-        if not model:
-            return None
-        return self.LEGACY_TO_MODEL_ID.get(model, model)
-
     async def _tts_request(self, text: str, voice_id: str, filepath: str) -> None:
-        """
-        统一入口：短文本走同步接口，超过 max_chars 字的长文本自动改走异步接口。
-        """
-        text = (text or "").strip()
-        if len(text) > self.max_chars:
-            logger.info(f"FishAudio TTS 文本 {len(text)} 字超过阈值 {self.max_chars}，改用异步接口")
-            await self._tts_request_async(text, voice_id, filepath)
-        else:
-            await self._tts_request_sync(text, voice_id, filepath)
-
-    async def _tts_request_sync(self, text: str, voice_id: str, filepath: str) -> None:
-        """同步接口（兼容旧版 /v1/tts，header model + reference_id），流式写入 WAV 文件。"""
+        """向 FishAudio API 发送 TTS 请求（同步接口），流式写入 WAV 文件。"""
         start = time.perf_counter()
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -329,7 +301,7 @@ class FishAudioTTS(Star):
                                     f.write(chunk)
                                     bytes_written += len(chunk)
                             logger.info(
-                                f"FishAudio TTS 同步合成成功：{len(text)} 字，"
+                                f"FishAudio TTS 合成成功：{len(text)} 字，"
                                 f"{bytes_written} 字节，耗时 {time.perf_counter() - start:.2f}s"
                             )
                             return
@@ -337,7 +309,7 @@ class FishAudioTTS(Star):
                         # 429 或 5xx 可重试；其他状态码直接失败
                         if resp.status in (429, 500, 502, 503, 504) and attempt < self.max_retries - 1:
                             logger.warning(
-                                f"FishAudio TTS 同步接口返回 HTTP {resp.status}，"
+                                f"FishAudio TTS 返回 HTTP {resp.status}，"
                                 f"第 {attempt + 1}/{self.max_retries} 次重试"
                             )
                             await asyncio.sleep(min(2 ** attempt, 8))
@@ -346,117 +318,12 @@ class FishAudioTTS(Star):
                 except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
                     if attempt < self.max_retries - 1:
                         logger.warning(
-                            f"FishAudio TTS 同步接口网络/超时错误：{e}，"
+                            f"FishAudio TTS 网络/超时错误：{e}，"
                             f"第 {attempt + 1}/{self.max_retries} 次重试"
                         )
                         await asyncio.sleep(min(2 ** attempt, 8))
                         continue
                     raise
-
-    async def _tts_request_async(self, text: str, voice_id: str, filepath: str) -> None:
-        """异步接口（Open API v1）：创建任务 -> 轮询 -> 下载音频，适合长文本。"""
-        start = time.perf_counter()
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload: dict = {
-            "text": text,
-            "voiceId": voice_id,
-            "format": "wav",
-        }
-        model_id = self._open_api_model_id()
-        if model_id:
-            payload["modelId"] = model_id
-
-        async with self._semaphore:
-            task_id = await self._create_tts_job(payload, headers)
-            logger.info(
-                f"FishAudio TTS 异步任务已创建：task_id={task_id}，"
-                f"{len(text)} 字，音色={voice_id}"
-            )
-            task = await self._poll_tts_job(task_id, headers)
-            status = (task or {}).get("status", "")
-            if status not in ("success", "partial_fail"):
-                raise Exception(f"异步任务失败：status={status}")
-            delivery = (task or {}).get("delivery") or {}
-            download_url = delivery.get("downloadUrl") or task.get("downloadUrl")
-            if not download_url:
-                raise Exception("异步任务成功但缺少下载地址")
-            await self._download_tts_audio(download_url, headers, filepath)
-            logger.info(
-                f"FishAudio TTS 异步合成成功：{len(text)} 字，"
-                f"{os.path.getsize(filepath)} 字节，耗时 {time.perf_counter() - start:.2f}s"
-            )
-
-    async def _create_tts_job(self, payload: dict, headers: dict) -> str:
-        """创建异步任务，返回 task.id。仅对 429 重试，避免网络不确定时重复创建扣费。"""
-        url = f"{self.api_base_url}/api/open/v1/speech/tts/jobs"
-        for attempt in range(self.max_retries):
-            try:
-                async with self._session.post(url, headers=headers, json=payload, proxy=self.proxy) as resp:
-                    if resp.status == 202:
-                        data = await resp.json()
-                        task = data.get("task") or data
-                        task_id = task.get("id") or data.get("id")
-                        if not task_id:
-                            raise Exception(f"创建异步任务成功但响应缺少 task.id：{str(data)[:200]}")
-                        return task_id
-                    error_text = (await resp.text())[:200]
-                    if resp.status == 429 and attempt < self.max_retries - 1:
-                        logger.warning(
-                            f"FishAudio 创建异步任务被限流(429)，第 {attempt + 1}/{self.max_retries} 次重试"
-                        )
-                        await asyncio.sleep(min(2 ** attempt, 8))
-                        continue
-                    raise Exception(f"创建异步任务失败，HTTP {resp.status}: {error_text}")
-            except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
-                # 网络中断时服务端可能已接受任务，按官方建议不要立即重复创建
-                raise Exception(
-                    f"创建异步任务网络/超时错误（服务端可能已接受，请勿重复创建）：{e}"
-                ) from e
-        raise Exception("创建异步任务失败（重试次数用尽）")
-
-    async def _poll_tts_job(self, task_id: str, headers: dict) -> dict:
-        """轮询任务直到终态或超时；间隔从 job_poll_interval 起逐步增加（官方建议 3-5 秒）。"""
-        url = f"{self.api_base_url}/api/open/v1/speech/tts/jobs/{task_id}"
-        interval = max(1.0, self.job_poll_interval)
-        deadline = time.monotonic() + self.job_poll_timeout
-        while True:
-            async with self._session.get(url, headers=headers, proxy=self.proxy) as resp:
-                if resp.status != 200:
-                    error_text = (await resp.text())[:200]
-                    raise Exception(f"查询异步任务失败，HTTP {resp.status}: {error_text}")
-                data = await resp.json()
-                task = data.get("task") if isinstance(data, dict) and isinstance(data.get("task"), dict) else data
-                task = task or {}
-                status = task.get("status") or (data.get("status") if isinstance(data, dict) else None)
-                if status in ("success", "partial_fail"):
-                    if status == "partial_fail":
-                        logger.warning("FishAudio 异步任务部分分段失败，但已有部分最终音频")
-                    return task
-                if status == "fail":
-                    raise Exception("异步任务失败（fail），无可下载音频")
-                if status not in ("pending", "processing"):
-                    raise Exception(f"异步任务返回未知状态：{status}")
-                if time.monotonic() >= deadline:
-                    raise Exception(f"异步任务轮询超时（{self.job_poll_timeout}s），task_id={task_id}")
-                logger.info(f"FishAudio 异步任务 {task_id} 状态：{status}，{interval:.0f}s 后继续轮询")
-                await asyncio.sleep(interval)
-                interval = min(interval + 1, 5)
-
-    async def _download_tts_audio(self, download_url: str, headers: dict, filepath: str) -> None:
-        """下载异步任务音频：携带相同 Bearer，并允许跟随签名跳转。"""
-        async with self._session.get(download_url, headers=headers, proxy=self.proxy) as resp:
-            if resp.status != 200:
-                error_text = (await resp.text())[:200]
-                raise Exception(f"下载异步音频失败，HTTP {resp.status}: {error_text}")
-            bytes_written = 0
-            with open(filepath, "wb") as f:
-                async for chunk in resp.content.iter_chunked(64 * 1024):
-                    f.write(chunk)
-                    bytes_written += len(chunk)
-            logger.info(f"FishAudio 异步音频下载完成：{bytes_written} 字节 -> {filepath}")
 
     def _new_audio_path(self) -> str:
         """生成随机命名的临时 WAV 文件路径。"""
@@ -508,6 +375,10 @@ class FishAudioTTS(Star):
             yield event.plain_result(self._voice_failure_message(voice_name))
             return
 
+        if len(text) > self.max_chars:
+            yield event.plain_result(f"字数超限啦，最多 {self.max_chars} 字，当前 {len(text)} 字。")
+            return
+
         if not await self._check_rate_limit(event):
             yield event.plain_result(self._voice_failure_message(voice_name))
             return
@@ -546,6 +417,8 @@ class FishAudioTTS(Star):
 emotion 支持 happy、sad、angry、whisper、excited、neutral、fearful、surprised 等标签；
 其他情绪标签也会以 [标签] 形式原样拼接到文本开头透传给 FishAudio，不会导致调用失败。
 
+text 不能超过字数上限（默认 500 字，可在插件配置调整），超长会被插件直接拒绝，请精简后再调用。
+
 调用本工具后，仍必须输出一小段文字回复（例如语气词、旁白，或对语音内容的简短回应/总结），不要只发语音不说话；只是不要把 text 参数的内容整段重复成文字。
 
 Args:
@@ -561,6 +434,10 @@ Args:
         text = (text or "").strip()
         if not text:
             yield event.plain_result("🎤")
+            return
+
+        if len(text) > self.max_chars:
+            yield event.plain_result(f"字数超限啦，最多 {self.max_chars} 字，当前 {len(text)} 字。")
             return
 
         if emotion:
@@ -631,6 +508,7 @@ Args:
             "3. 回复带有强烈情绪（开心、生气、撒娇、困倦、惊讶等）时，适合用语音表达。\n"
             "4. 只要调用了 tts_speak，就必须同时输出一小段文字回复（语气词、旁白或简短回应），不能只发语音不说话。\n"
             "普通客观问答可以不用调用。\n"
+            f"tts_speak 的 text 最多 {self.max_chars} 字，超长会被直接拒绝，请精简后再调用。\n"
             f"当前可用的音色名称：{voice_names}。用户明确指定音色时用 voice_name 参数传入，否则用默认音色。\n"
             "emotion 参数可传 happy、sad、angry、whisper、excited、neutral、fearful、surprised 等标签，其他情绪标签也会原样透传。\n"
             "调用 tts_speak 后，仍必须输出一小段文字回复（例如语气词、旁白或简短回应），不能只发语音不说话；只是不要把 text 参数的内容整段重复成文字。"
@@ -660,7 +538,7 @@ Args:
             f"功能开关：{'开启' if self.enabled else '关闭'}",
             f"默认音色：{self._effective_default_voice_name() or '未配置'}",
             f"可用音色：{len(self.voices)} 个",
-            f"同步/异步阈值：{self.max_chars} 字（超过自动改用异步接口）",
+            f"字数上限：{self.max_chars} 字（超出会提示字数超限）",
             f"并发上限：{self.max_concurrent_requests}",
             f"失败重试：{self.max_retries} 次",
             f"调用间隔限制：{self.rate_limit_seconds} 秒" if self.rate_limit_seconds else "调用间隔限制：不限制",
