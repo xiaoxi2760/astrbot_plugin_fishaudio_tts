@@ -154,6 +154,40 @@ class FishAudioTTS(Star):
     def _voice_failure_message(voice_name: str) -> str:
         return f"{voice_name}说累啦，让她休息一会儿吧"
 
+    def _help_text(self) -> str:
+        """生成语音功能使用帮助文本。"""
+        voice_names = "、".join(self.voices.keys()) if self.voices else "（未配置）"
+        return "\n".join([
+            "🎙️ FishAudio TTS 使用帮助",
+            "",
+            "【语音合成】发送：音色名说 文本",
+            "例如：小爱说 今天天气真不错",
+            "      小爱说 [happy]今天是个好日子",
+            "",
+            "【查看音色】发送：语音音色",
+            "【使用帮助】发送：语音帮助",
+            "【功能开关】管理员发送：/tts",
+            "",
+            f"【当前音色】{voice_names}",
+            "",
+            "【情感标签】[happy] [sad] [angry] [whisper] [excited] [neutral] [fearful] [surprised]",
+            "其他标签（如 [sleep]）也会原样透传。",
+            "",
+            "【LLM 语音】开启后 AI 可调用 tts_speak 工具朗读内容，并附带一小段文字回复。",
+        ])
+
+    def _voice_list_text(self) -> str:
+        """生成当前可用音色列表文本。"""
+        if not self.voices:
+            return "还没有配置音色，请在插件配置里填写 voice_names 和 voice_ids。"
+        lines = ["🎙️ 可用音色："]
+        for i, name in enumerate(self.voices, 1):
+            suffix = "（默认）" if name == self.default_voice_name else ""
+            lines.append(f"{i}. {name}{suffix}")
+        lines.append("")
+        lines.append("发送「音色名说 文本」即可用对应音色合成语音。")
+        return "\n".join(lines)
+
     async def _check_rate_limit(self, event: AstrMessageEvent) -> bool:
         """
         检查用户是否触发频率限制。
@@ -248,6 +282,17 @@ class FishAudioTTS(Star):
         if self._is_tts_command(event.message_str) and not event.is_admin():
             event.stop_event()
             return
+
+        # 语音帮助 / 语音音色：与小爱说同机制，前缀匹配即触发
+        msg = (event.message_str or "").strip()
+        for keyword in ("语音帮助", "语音音色"):
+            if msg == keyword or msg.startswith(keyword + " ") or msg.startswith(keyword + "　"):
+                event.stop_event()
+                if keyword == "语音帮助":
+                    yield event.plain_result(self._help_text())
+                else:
+                    yield event.plain_result(self._voice_list_text())
+                return
 
         matched = self._match_voice_say(event.message_str)
         if not matched:
@@ -408,6 +453,18 @@ Args:
             yield event.plain_result("想听我说什么呀？")
         else:
             yield event.plain_result("喔，那我闭嘴咯。")
+
+    @filter.command("语音帮助")
+    async def voice_help_cmd(self, event: AstrMessageEvent):
+        """语音功能使用帮助。"""
+        event.stop_event()
+        yield event.plain_result(self._help_text())
+
+    @filter.command("语音音色")
+    async def voice_list_cmd(self, event: AstrMessageEvent):
+        """查看当前可用音色。"""
+        event.stop_event()
+        yield event.plain_result(self._voice_list_text())
 
     async def terminate(self):
         """插件卸载时关闭 aiohttp 会话，避免资源泄漏。"""
