@@ -218,8 +218,6 @@ class FishAudioTTS(Star):
             "例如：小爱说 今天天气真不错",
             "      小爱说 [happy]今天是个好日子",
             "",
-            f"【字数限制】文本最多 {self.max_chars} 字，超出会回复字数超限。",
-            "",
             "【查看音色】发送：语音音色",
             "【默认音色】管理员发送：语音默认（可跟音色名，如：语音默认 小爱）",
             "【语音状态】管理员发送：语音状态",
@@ -417,8 +415,6 @@ class FishAudioTTS(Star):
 emotion 支持 happy、sad、angry、whisper、excited、neutral、fearful、surprised 等标签；
 其他情绪标签也会以 [标签] 形式原样拼接到文本开头透传给 FishAudio，不会导致调用失败。
 
-text 不能超过字数上限（默认 500 字，可在插件配置调整），超长会被插件直接拒绝，请精简后再调用。
-
 调用本工具后，仍必须输出一小段文字回复（例如语气词、旁白，或对语音内容的简短回应/总结），不要只发语音不说话；只是不要把 text 参数的内容整段重复成文字。
 
 Args:
@@ -508,7 +504,6 @@ Args:
             "3. 回复带有强烈情绪（开心、生气、撒娇、困倦、惊讶等）时，适合用语音表达。\n"
             "4. 只要调用了 tts_speak，就必须同时输出一小段文字回复（语气词、旁白或简短回应），不能只发语音不说话。\n"
             "普通客观问答可以不用调用。\n"
-            f"tts_speak 的 text 最多 {self.max_chars} 字，超长会被直接拒绝，请精简后再调用。\n"
             f"当前可用的音色名称：{voice_names}。用户明确指定音色时用 voice_name 参数传入，否则用默认音色。\n"
             "emotion 参数可传 happy、sad、angry、whisper、excited、neutral、fearful、surprised 等标签，其他情绪标签也会原样透传。\n"
             "调用 tts_speak 后，仍必须输出一小段文字回复（例如语气词、旁白或简短回应），不能只发语音不说话；只是不要把 text 参数的内容整段重复成文字。"
@@ -538,7 +533,6 @@ Args:
             f"功能开关：{'开启' if self.enabled else '关闭'}",
             f"默认音色：{self._effective_default_voice_name() or '未配置'}",
             f"可用音色：{len(self.voices)} 个",
-            f"字数上限：{self.max_chars} 字（超出会提示字数超限）",
             f"并发上限：{self.max_concurrent_requests}",
             f"失败重试：{self.max_retries} 次",
             f"调用间隔限制：{self.rate_limit_seconds} 秒" if self.rate_limit_seconds else "调用间隔限制：不限制",
