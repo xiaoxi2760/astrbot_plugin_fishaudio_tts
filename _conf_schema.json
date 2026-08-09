@@ -41,6 +41,12 @@
     "default": 5,
     "hint": "0 表示不限制，管理员不受限"
   },
+  "auto_tts_fallback": {
+    "description": "自动兜底 TTS",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，即使 AI 忘了调用 tts_speak，只要最终回复里写了台词（非旁白/标签的正文）也会自动合成语音；关闭则只靠 AI 主动调用工具"
+  },
   "max_chars": {
     "description": "字数上限(字)",
     "type": "int",
