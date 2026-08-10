@@ -1,5 +1,4 @@
 import os
-import re
 import uuid
 import asyncio
 import aiohttp
@@ -7,14 +6,14 @@ import json
 import time
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger
-from astrbot.api.event import AstrMessageEvent, ResultContentType, filter
+from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
 from astrbot.core.star.filter.event_message_type import EventMessageType
 
 
 # 注册插件：名字、作者、描述、版本号
-@register("astrbot_plugin_fishaudio_tts", "xiaoxi2760", "基于 FishAudio API 的 TTS 插件，支持多音色、代理和频率限制", "2.1.1")
+@register("astrbot_plugin_fishaudio_tts", "xiaoxi2760", "基于 FishAudio API 的 TTS 插件，支持多音色、代理和频率限制", "2.1.0")
 class FishAudioTTS(Star):
     """
     FishAudio TTS 插件
@@ -55,8 +54,6 @@ class FishAudioTTS(Star):
         self.model = config.get("model", "s2.1-pro-free")
         self.proxy = config.get("proxy", "").strip() or None  # 空字符串转为 None
         self.rate_limit_seconds = config.get("rate_limit_seconds", 5)
-        # 自动兜底 TTS：模型忘了调 tts_speak 时，只要最终回复里写了台词就自动合成
-        self.auto_tts_fallback_enabled = bool(config.get("auto_tts_fallback", True))
 
         # ---- 可配置限制（字数、并发、重试、超时、异步轮询） ----
         self.max_chars = max(1, int(config.get("max_chars", 500) or 500))      # 字数上限，超出直接提示字数超限
@@ -211,67 +208,6 @@ class FishAudioTTS(Star):
     @staticmethod
     def _voice_failure_message(voice_name: str) -> str:
         return f"{voice_name}说累啦，让她休息一会儿吧"
-
-    @staticmethod
-    def _looks_like_rp(text: str) -> bool:
-        """判断回复是否像角色扮演风格（含动作旁白/表情/好感度标签等标记）。
-
-        只对 RP 风格回复做自动兜底，避免把普通问答整段误合成语音。
-        """
-        text = text or ""
-        return (
-            "（" in text
-            or "【" in text
-            or "&&" in text
-            or "[好感度" in text
-        )
-
-    @staticmethod
-    def _extract_spoken_text(text: str) -> str:
-        """从 RP 回复正文中提取角色说出口的台词。
-
-        判定规则（按行）：
-        - 剥掉行内 （…）/（…）/【…】 动作旁白片段；
-        - 整行是 （…）/（…）/【…】 → 动作/旁白，忽略；
-        - 整行是 […] 标签（如 [好感度 上升：1]）→ 日志标签，忽略；
-        - 整行是 &&…&& 表情标签 → 忽略；
-        - 整行是 「…」/“…” → 内心独白，忽略；
-        - 轻量去除 Markdown 标记；
-        - 其余非空行视为台词。
-        """
-        lines = (text or "").splitlines()
-        parts = []
-        for raw in lines:
-            line = raw.strip()
-            if not line:
-                continue
-            # 剥掉行内动作旁白，如（她笑道）早安 → 早安
-            line = re.sub(r"[（(【][^）)】]*[）)】]", "", line).strip()
-            if not line:
-                continue
-            # 整行纯旁白 / 标签 / 表情 / 内心独白
-            if (
-                (line.startswith("（") and line.endswith("）"))
-                or (line.startswith("(") and line.endswith(")"))
-                or (line.startswith("【") and line.endswith("】"))
-            ):
-                continue
-            if line.startswith("[") and line.endswith("]"):
-                continue
-            if line.startswith("&&") and line.endswith("&&"):
-                continue
-            if (line.startswith("「") and line.endswith("」")) or (
-                line.startswith("“") and line.endswith("”")
-            ):
-                continue
-            # 轻量去 Markdown
-            line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
-            line = re.sub(r"`", "", line)
-            line = re.sub(r"^#{1,6}\s*", "", line)
-            line = line.strip()
-            if line:
-                parts.append(line)
-        return "\n".join(parts).strip()
 
     def _help_text(self) -> str:
         """生成语音功能使用帮助文本。"""
@@ -535,8 +471,6 @@ Args:
                 f"FishAudio LLM TTS 成功：{os.path.getsize(filepath)} 字节 -> {filepath}"
                 f"（音色：{used_voice_name}）"
             )
-            # 标记本轮回合已出过声，让自动兜底 hook 不再重复合成
-            event.set_extra("_fishaudio_tts_spoken", True)
 
             # 语音附带简短文字标记，避免主消息链只剩 Reply/At 时被框架跳过。
             # 该标记不包含朗读内容本身，不会把 text 重复输出为普通文字。
@@ -547,72 +481,6 @@ Args:
         except Exception as e:
             logger.error(f"FishAudio LLM TTS 失败（音色：{used_voice_name}）：{e}")
             yield event.plain_result(self._voice_failure_message(used_voice_name))
-
-    # ------------------------------------------------------------
-    # 自动兜底 TTS：模型忘了调 tts_speak，但最终回复里写了台词 → 补合成语音
-    # ------------------------------------------------------------
-
-    @filter.on_decorating_result()
-    async def auto_tts_fallback(self, event: AstrMessageEvent):
-        """发送前兜底：把回复正文里的台词补合成语音。
-
-        主要覆盖“模型在思考里计划调用 tts_speak 却没发出工具调用”的情况。
-        仅对带 RP 标记的 LLM 回复生效，普通问答不受影响；本轮回合已通过
-        tts_speak 出过声则跳过。
-        """
-        if not self.auto_tts_fallback_enabled:
-            return
-        if not self.enabled or not self.api_key or not self.voices:
-            return
-        result = event.get_result()
-        if result is None or not result.chain:
-            return
-        if not result.is_llm_result():
-            return
-        if result.result_content_type in (
-            ResultContentType.STREAMING_RESULT,
-            ResultContentType.STREAMING_FINISH,
-        ):
-            return
-        # 本轮回合已通过 tts_speak 出过声，避免重复合成
-        if event.get_extra("_fishaudio_tts_spoken"):
-            return
-        # 消息链里已有语音组件，跳过
-        for comp in result.chain:
-            if isinstance(comp, Comp.Record):
-                return
-
-        text = "".join(
-            comp.text for comp in result.chain if isinstance(comp, Comp.Plain)
-        )
-        if not FishAudioTTS._looks_like_rp(text):
-            return  # 普通问答等非 RP 回复，不做兜底
-        speech = FishAudioTTS._extract_spoken_text(text)
-        if not speech:
-            return
-        if len(speech) > self.max_chars:
-            logger.debug(
-                f"FishAudio 自动兜底 TTS 跳过：台词 {len(speech)} 字超过上限 {self.max_chars}"
-            )
-            return
-
-        if not await self._check_rate_limit(event):
-            return
-
-        voice_name = self._effective_default_voice_name()
-        if not voice_name:
-            return
-        try:
-            filepath = self._new_audio_path()
-            await self._tts_request(speech, self.voices[voice_name], filepath)
-            result.chain.append(Comp.Plain("🎤"))
-            result.chain.append(Comp.Record(file=filepath))
-            logger.info(
-                f"FishAudio 自动兜底 TTS 成功：{os.path.getsize(filepath)} 字节 -> "
-                f"{filepath}（音色：{voice_name}）"
-            )
-        except Exception as e:
-            logger.error(f"FishAudio 自动兜底 TTS 失败（音色：{voice_name}）：{e}")
 
     # ------------------------------------------------------------
     # 提高 LLM 调用语音工具的积极性：请求前注入系统提示
@@ -629,20 +497,16 @@ Args:
         voice_names = "、".join(self.voices.keys())
         req.system_prompt += (
             f"\n\n{marker}\n"
-            "你现在拥有语音合成能力，可以把想说出口的话用 tts_speak 工具合成语音发送。\n"
-            "【强制规则】\n"
-            "1. 只要本轮回复里包含你想让角色开口说的话（台词：招呼、回应、撒娇、嘟囔、感叹、问句等），"
-            "就必须调用 tts_speak，把台词放入 text 参数；不要只把台词写在文字里却不调用工具。\n"
-            "2. tts_speak 的 text 只放台词本身；动作、神态、内心活动、语气词、表情放在文字回复里，"
-            "不要混进 text。\n"
-            "3. 调用 tts_speak 后，仍要输出一小段文字（旁白/表情/语气词/好感度标签）作为完整回复，"
-            "但不要整段重复 text 里的台词。\n"
-            "4. 如果这轮角色确实没有台词（只有动作或内心活动），可以不调用，但尽量安排一句台词让角色开口，"
-            "让互动有声音。\n"
-            f"5. 台词不宜过长（超过 {self.max_chars} 字会被拒绝），保持 1~2 句话为宜。\n"
-            f"可用音色：{voice_names}。用户明确指定音色时用 voice_name 传入，否则用默认音色。\n"
-            "emotion 参数可传 happy、sad、angry、whisper、excited、neutral、fearful、surprised，"
-            "其他情绪标签也会原样透传。"
+            "你现在拥有语音合成能力：可以调用 tts_speak 工具，把想说的话合成语音直接发送。\n"
+            "以下情况请主动调用 tts_speak，用语音开口说话：\n"
+            "1. 用户要求你说话、朗读、唱歌或念台词时；\n"
+            "2. 角色扮演或日常互动中你想开口说话、表达情绪时，优先用语音而不是纯文字；\n"
+            "3. 回复带有强烈情绪（开心、生气、撒娇、困倦、惊讶等）时，适合用语音表达。\n"
+            "4. 只要调用了 tts_speak，就必须同时输出一小段文字回复（语气词、旁白或简短回应），不能只发语音不说话。\n"
+            "普通客观问答可以不用调用。\n"
+            f"当前可用的音色名称：{voice_names}。用户明确指定音色时用 voice_name 参数传入，否则用默认音色。\n"
+            "emotion 参数可传 happy、sad、angry、whisper、excited、neutral、fearful、surprised 等标签，其他情绪标签也会原样透传。\n"
+            "调用 tts_speak 后，仍必须输出一小段文字回复（例如语气词、旁白或简短回应），不能只发语音不说话；只是不要把 text 参数的内容整段重复成文字。"
         )
 
     # ------------------------------------------------------------
@@ -672,7 +536,6 @@ Args:
             f"并发上限：{self.max_concurrent_requests}",
             f"失败重试：{self.max_retries} 次",
             f"调用间隔限制：{self.rate_limit_seconds} 秒" if self.rate_limit_seconds else "调用间隔限制：不限制",
-            f"自动兜底 TTS：{'开启' if self.auto_tts_fallback_enabled else '关闭'}",
             f"API 地址：{self.api_base_url}",
             f"模型：{self.model or '默认'}",
             f"API Key：{'已配置' if self.api_key else '未配置'}",
