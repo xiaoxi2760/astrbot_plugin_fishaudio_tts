@@ -74,5 +74,11 @@
     "description": "读取超时(秒)",
     "type": "int",
     "default": 30
+  },
+  "boost_tts_prompt": {
+    "description": "LLM 调用 tts_speak 的积极性提示档位：0=不注入，1=仅用户明确要求说话时调用（推荐），2=旧版积极引导（日常角色扮演优先用语音）",
+    "type": "int",
+    "default": 1,
+    "hint": "0 关闭；1 克制（只在用户要求说话/朗读时调用）；2 保留旧版高积极性引导"
   }
 }

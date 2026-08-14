@@ -59,6 +59,8 @@ class FishAudioTTS(Star):
         self.max_chars = max(1, int(config.get("max_chars", 500) or 500))      # 字数上限，超出直接提示字数超限
         self.max_concurrent_requests = max(1, int(config.get("max_concurrent_requests", 5) or 5))
         self.max_retries = max(1, int(config.get("max_retries", 3) or 3))
+        # LLM 调用 tts_speak 的积极性提示档位：0=不注入，1=克制，2=旧版积极
+        self.boost_tts_prompt = int(config.get("boost_tts_prompt", 1) or 1)
         self.timeout_total = float(config.get("timeout_total", 60) or 60)
         self.timeout_connect = float(config.get("timeout_connect", 10) or 10)
         self.timeout_sock_read = float(config.get("timeout_sock_read", 30) or 30)
@@ -407,13 +409,7 @@ class FishAudioTTS(Star):
         """
 让 AI 用语音和用户说话，这是插件提供的“开口说话”能力。
 
-当用户要求你说话、朗读、念台词、用声音回复时，必须调用本工具。
-在角色扮演、陪伴聊天中，只要你想开口说话、表达情绪或互动，就优先调用本工具生成语音，而不是只发文字。
-当回复带有强烈情绪（开心、生气、撒娇、困倦、惊讶等）时，适合用语音表达。
-客观知识问答和普通闲聊不需要每次调用。
-
-emotion 支持 happy、sad、angry、whisper、excited、neutral、fearful、surprised 等标签；
-其他情绪标签也会以 [标签] 形式原样拼接到文本开头透传给 FishAudio，不会导致调用失败。
+仅在用户明确要求你说话、朗读、念台词、用声音回复时才调用本工具；不要在普通闲聊或客观问答中频繁主动调用。
 
 调用本工具后，仍必须输出一小段文字回复（例如语气词、旁白，或对语音内容的简短回应/总结），不要只发语音不说话；只是不要把 text 参数的内容整段重复成文字。
 
@@ -488,25 +484,47 @@ Args:
 
     @filter.on_llm_request()
     async def on_llm_request_boost(self, event: AstrMessageEvent, req: ProviderRequest):
-        """在 LLM 请求发出前注入语音工具使用提示，提高 tts_speak 调用积极性。"""
+        """按配置档位在 LLM 请求前注入语音工具使用提示。
+
+        boost_tts_prompt: 0=不注入；1=克制（仅用户明确要求说话/朗读时调用）；
+        2=旧版积极引导（日常角色扮演也优先用语音）。
+        """
+        if self.boost_tts_prompt <= 0:
+            return
         if not self.enabled or not self.api_key or not self.voices:
             return
         marker = "[FishAudio TTS 工具提醒]"
         if marker in (req.system_prompt or ""):
             return
         voice_names = "、".join(self.voices.keys())
+
+        if self.boost_tts_prompt == 2:
+            # 旧版积极文案：鼓励日常角色扮演也多开口
+            req.system_prompt += (
+                f"\n\n{marker}\n"
+                "你现在拥有语音合成能力：可以调用 tts_speak 工具，把想说的话合成语音直接发送。\n"
+                "以下情况请主动调用 tts_speak，用语音开口说话：\n"
+                "1. 用户要求你说话、朗读、唱歌或念台词时；\n"
+                "2. 角色扮演或日常互动中你想开口说话、表达情绪时，优先用语音而不是纯文字；\n"
+                "3. 回复带有强烈情绪（开心、生气、撒娇、困倦、惊讶等）时，适合用语音表达。\n"
+                "4. 只要调用了 tts_speak，就必须同时输出一小段文字回复（语气词、旁白或简短回应），不能只发语音不说话。\n"
+                "普通客观问答可以不用调用。\n"
+                f"当前可用的音色名称：{voice_names}。用户明确指定音色时用 voice_name 参数传入，否则用默认音色。\n"
+                "emotion 参数可传 happy、sad、angry、whisper、excited、neutral、fearful、surprised 等标签，其他情绪标签也会原样透传。\n"
+                "调用 tts_speak 后，仍必须输出一小段文字回复（例如语气词、旁白或简短回应），不能只发语音不说话；只是不要把 text 参数的内容整段重复成文字。"
+            )
+            return
+
+        # 档位 1（默认）：克制文案，只在用户明确要求说话/朗读时调用
         req.system_prompt += (
             f"\n\n{marker}\n"
-            "你现在拥有语音合成能力：可以调用 tts_speak 工具，把想说的话合成语音直接发送。\n"
-            "以下情况请主动调用 tts_speak，用语音开口说话：\n"
-            "1. 用户要求你说话、朗读、唱歌或念台词时；\n"
-            "2. 角色扮演或日常互动中你想开口说话、表达情绪时，优先用语音而不是纯文字；\n"
-            "3. 回复带有强烈情绪（开心、生气、撒娇、困倦、惊讶等）时，适合用语音表达。\n"
-            "4. 只要调用了 tts_speak，就必须同时输出一小段文字回复（语气词、旁白或简短回应），不能只发语音不说话。\n"
-            "普通客观问答可以不用调用。\n"
-            f"当前可用的音色名称：{voice_names}。用户明确指定音色时用 voice_name 参数传入，否则用默认音色。\n"
-            "emotion 参数可传 happy、sad、angry、whisper、excited、neutral、fearful、surprised 等标签，其他情绪标签也会原样透传。\n"
-            "调用 tts_speak 后，仍必须输出一小段文字回复（例如语气词、旁白或简短回应），不能只发语音不说话；只是不要把 text 参数的内容整段重复成文字。"
+            "你可以调用 tts_speak 工具合成语音，但请保持克制：\n"
+            "1. 仅当用户明确要求你说话、朗读、唱歌或念台词时，才调用 tts_speak；\n"
+            "2. 不要在日常闲聊、客观问答中主动频繁调用语音，除非用户要求；\n"
+            "3. 回复带有强烈情绪需要“出声”时可视情况调用，但不是每次回复都需要语音；\n"
+            "4. 一旦调用 tts_speak，就必须同时输出一小段文字回复（语气词、旁白或简短回应），不能只发语音不说话。\n"
+            f"当前可用音色：{voice_names}。用户指定音色时用 voice_name 参数传入，否则用默认音色。\n"
+            "emotion 可传 happy、sad、angry、whisper、excited、neutral、fearful、surprised 等标签。"
         )
 
     # ------------------------------------------------------------
